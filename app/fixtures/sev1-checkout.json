@@ -1,0 +1,7 @@
+{
+  "id": "INC-1042",
+  "title": "Checkout 5xx spike",
+  "source": "pagerduty",
+  "alert": "ALERT service=checkout-api host=ip-10-2-14-7.eu-west-1.compute.internal fired at 02:14 UTC. HTTP 503 rate 38% over 5m. About 4,200 customers saw failed payments in the last 10 minutes. Reporter: maria.lopez@example.com, +34 600 123 456.",
+  "logs": "02:13:58 UTC checkout-api-7f9c pod OOMKilled (limit 512Mi)\n02:14:03 UTC checkout-api-7f9c Back-off restarting failed container\n02:14:10 UTC upstream payment-gateway p99 latency 4.1s\n02:14:22 UTC customer card=4111********1111 email=j.smith@example.org checkout failed HTTP 503\n02:15:01 UTC checkout-api-2b1d pod OOMKilled (limit 512Mi)"
+}

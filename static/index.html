@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NightShift</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--mute:#8b949e;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff;--pii:#8957e5;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{font-size:18px;margin:0}header span{color:var(--mute)}
+main{display:grid;grid-template-columns:340px 1fr;gap:16px;padding:16px 20px;max-width:1400px;margin:auto}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 10px}
+textarea,select{width:100%;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;font:12px ui-monospace,monospace}
+textarea{min-height:110px;resize:vertical}
+button{background:var(--acc);color:#04111f;border:0;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer}
+button:disabled{background:#30363d;color:var(--mute);cursor:not-allowed}button.ghost{background:none;border:1px solid var(--line);color:var(--text)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid var(--line)}
+.ok{color:var(--ok);border-color:var(--ok)}.bad{color:var(--bad);border-color:var(--bad)}.warn{color:var(--warn);border-color:var(--warn)}
+.stages{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px}
+@media(max-width:700px){.stages{grid-template-columns:1fr 1fr}}
+.stage{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--panel)}
+.stage b{display:block}.stage small{color:var(--mute)}
+pre{white-space:pre-wrap;word-break:break-word;background:#0d1117;border:1px solid var(--line);border-radius:6px;padding:10px;font:12px/1.5 ui-monospace,monospace;margin:6px 0}
+mark{border-radius:3px;padding:0 2px;color:inherit}
+mark.pii{background:rgba(137,87,229,.35)}mark.fact{background:rgba(88,166,255,.3)}mark.inj{background:rgba(248,81,73,.4)}mark.line{background:rgba(248,81,73,.3);display:block}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left;vertical-align:top}th{color:var(--mute);font-weight:500}
+.claim{display:block;padding:4px 8px;border-left:3px solid var(--ok);margin:4px 0}.claim.bad{border-color:var(--bad);color:var(--text)}
+.mute{color:var(--mute)}#err{color:var(--bad)}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:4px 10px}
+</style>
+</head>
+<body>
+<header><h1>NightShift</h1><span>on-call copilot: every step gated by Clocked</span></header>
+<main>
+<section>
+  <div class="panel">
+    <h2>Incident</h2>
+    <select id="fixture"></select>
+    <p class="mute" style="margin:8px 0 4px">Alert</p><textarea id="alert"></textarea>
+    <p class="mute" style="margin:8px 0 4px">Logs</p><textarea id="logs" style="min-height:140px"></textarea>
+    <div class="row"><button id="run">Triage</button><span id="busy" class="mute"></span></div>
+    <div id="err"></div>
+  </div>
+  <div class="panel"><h2>Gates</h2><div id="gates" class="mute">Run a triage to see decisions.</div></div>
+  <div class="panel"><h2>Clocked calls</h2><div id="calls" class="mute">-</div></div>
+</section>
+<section>
+  <div class="stages" id="stages"></div>
+  <div class="panel" id="p-airlock" hidden><h2>1 · Airlock: PII + injection</h2><div id="airlock"></div></div>
+  <div class="panel" id="p-understand" hidden><h2>2 · Understand: extract + decide</h2><div id="understand"></div></div>
+  <div class="panel" id="p-retrieve" hidden><h2>3 · Retrieve: rerank + compare</h2><div id="retrieve"></div></div>
+  <div class="panel" id="p-act" hidden><h2>4 · Act: script inspection</h2><div id="act"></div></div>
+  <div class="panel" id="p-report" hidden><h2>5 · Report: fill + grounding</h2><div id="report"></div></div>
+</section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct = x => x == null ? "-" : (Math.round(x * 1000) / 10) + "%";
+const badge = (ok, t) => `<span class="badge ${ok ? "ok" : "bad"}">${esc(t)}</span>`;
+let fixtures = [], current = null;
+
+function highlight(text, spans) {            // spans: [{start,end,cls,title}]
+  spans = spans.filter(s => s.start != null && s.end != null).sort((a, b) => a.start - b.start);
+  let out = "", last = 0;
+  for (const s of spans) {
+    if (s.start < last) continue;
+    out += esc(text.slice(last, s.start)) + `<mark class="${s.cls}" title="${esc(s.title)}">${esc(text.slice(s.start, s.end))}</mark>`;
+    last = s.end;
+  }
+  return out + esc(text.slice(last));
+}
+
+async function api(path, body) {
+  const r = await fetch(path, body ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || j));
+  return j;
+}
+
+async function boot() {
+  fixtures = await api("/api/fixtures");
+  $("fixture").innerHTML = fixtures.map((f, i) => `<option value="${i}">${esc(f.id)} · ${esc(f.title)}</option>`).join("") + `<option value="-1">Custom…</option>`;
+  $("fixture").onchange = load; load();
+}
+function load() {
+  const f = fixtures[$("fixture").value] || {alert: "", logs: ""};
+  $("alert").value = f.alert; $("logs").value = f.logs;
+}
+
+$("run").onclick = async () => {
+  $("err").textContent = ""; $("run").disabled = true; $("busy").textContent = "running 5 stages…";
+  const f = fixtures[$("fixture").value] || {};
+  try {
+    current = await api("/api/triage", {id: f.id, title: f.title || "Ad-hoc incident", source: f.source || "manual",
+                                        alert: $("alert").value, logs: $("logs").value});
+    render(current);
+  } catch (e) { $("err").textContent = e.message; }
+  $("run").disabled = false; $("busy").textContent = "";
+};
+
+function render(o) {
+  const S = o.stages, g = o.gates;
+  const stageOk = st => g.filter(x => x.stage === st).every(x => x.passed);
+  $("stages").innerHTML = [["airlock","Airlock"],["understand","Understand"],["retrieve","Retrieve"],["act","Act"],["report","Report"]]
+    .map(([k, n], i) => `<div class="stage"><b>${i + 1} · ${n}</b>${badge(stageOk(k), stageOk(k) ? "clear" : "flagged")}</div>`).join("");
+  document.querySelectorAll("[id^=p-]").forEach(p => p.hidden = false);
+
+  $("gates").innerHTML = `<table>${g.map(x => `<tr><td>${badge(x.passed, x.passed ? "pass" : "stop")}</td><td><b>${esc(x.gate)}</b><br><span class="mute">${esc(x.why)}</span><br>→ ${esc(x.action)}</td></tr>`).join("")}</table>`
+    + (o.locked ? `<div class="row"><span class="badge bad">LOCKED</span><button class="ghost" onclick="unlock()">Human sign-off</button></div>` : "");
+  $("calls").innerHTML = `<table><tr><th>endpoint</th><th>ms</th><th>credits</th></tr>${o.calls.map(c => `<tr><td>/${c.endpoint}</td><td>${c.ms ?? c.wall_ms ?? "-"}</td><td>${c.credits ?? "-"}</td></tr>`).join("")}</table>`;
+
+  // 1 airlock
+  const A = S.airlock;
+  const piiSpans = A.entities.map(e => ({start: e.start, end: e.end, cls: "pii", title: `${e.type} ${pct(e.confidence)}`}));
+  const injSpans = (A.injection.evidence || []).map(e => ({start: e.start, end: e.end, cls: "inj", title: "injection"}));
+  $("airlock").innerHTML = `<div class="row">${badge(true, A.entities.length + " PII spans")} ${badge(!A.tainted, "injection " + pct(A.injection.injection))}
+    ${A.tainted ? `<span class="badge warn">${esc(A.injection.category)} · ${esc(A.injection.severity)}</span>` : ""}</div>
+    <p class="mute">Received (purple = personal data, red = quarantined)</p><pre>${highlight(A.raw, piiSpans.concat(injSpans))}</pre>
+    <p class="mute">What gets stored and shared</p><pre>${esc(A.masked)}</pre>`;
+
+  // 2 understand
+  const U = S.understand;
+  const factSpans = Object.entries(U.spans).flatMap(([k, v]) =>
+    v.items ? v.items.map(it => ({start: it.start, end: it.end, cls: "fact", title: k})) : [{start: v.start, end: v.end, cls: "fact", title: k}]);
+  const probs = p => p ? Object.entries(p).map(([k, v]) => `${esc(k)} ${pct(v)}`).join(" · ") : "";
+  $("understand").innerHTML = `<div class="kv">
+    <span class="mute">Severity</span><span><b>${esc(U.severity)}</b> <span class="mute">${probs(U.severity_probs)}</span></span>
+    <span class="mute">Routed to</span><span><b>${esc(U.team)}</b> <span class="mute">${probs(U.team_probs)}</span></span>
+    <span class="mute">Page a human</span><span>${badge(!U.page_human, U.page_human ? "yes, paging now" : "no")}</span>
+    <span class="mute">Customer update</span><span>${U.customer_update ? "required" : "not required"}</span>
+    ${Object.entries(U.facts).map(([k, v]) => `<span class="mute">${esc(k)}</span><span>${esc(Array.isArray(v) ? v.join(", ") : v ?? "—")}</span>`).join("")}
+    </div><p class="mute">Evidence for each fact (character offsets from /extract)</p><pre>${highlight(A.clean, factSpans)}</pre>`;
+
+  // 3 retrieve
+  const R = S.retrieve;
+  $("retrieve").innerHTML = `<p class="mute">Query: ${esc(R.query)}</p>
+    <table><tr><th>runbook</th><th>owner</th><th>relevance</th><th>rerank actions</th><th></th></tr>
+    ${R.runbooks.map(b => `<tr><td>${esc(b.title)}</td><td>${esc(b.owner)}</td><td>${pct(b.score)}</td><td>${esc(b.actions.join(", "))}</td><td>${b.demoted ? '<span class="badge warn">demoted</span>' : badge(true, "used")}</td></tr>`).join("")}</table>
+    ${R.conflicts.map(c => `<p>${badge(false, "conflict")} <b>${esc(c.a)}</b> vs <b>${esc(c.b)}</b> → demoted <b>${esc(c.demoted)}</b> <span class="mute">(${esc(c.rule)})</span></p>
+      ${(c.findings || []).map(f => `<pre>A: ${esc(f.a?.quote)}\nB: ${esc(f.b?.quote)}</pre>`).join("")}`).join("")}`;
+
+  // 4 act
+  $("act").innerHTML = S.act.map((s, i) => {
+    const lines = (s.evidence || []).map(e => ({start: e.start, end: e.end, cls: "line", title: "flagged"}));
+    return `<div style="margin-bottom:12px"><div class="row"><b>${esc(s.runbook)}</b> ${badge(s.runnable, s.verdict || "?")}
+      <span class="mute">${esc(s.category)} · malicious ${pct(s.malicious)} · suspicious ${pct(s.suspicious)}</span></div>
+      <pre>${highlight(s.script, lines)}</pre>
+      <div class="row"><button ${s.runnable ? "" : "disabled"} onclick="dryRun(${i})">Dry-run</button><span id="dr-${i}" class="mute"></span></div></div>`;
+  }).join("") || '<p class="mute">No scripts in the selected runbooks.</p>';
+
+  // 5 report
+  const P = S.report, rec = P.record;
+  $("report").innerHTML = `<div class="kv">${Object.entries(rec).filter(([k]) => k !== "status_update")
+      .map(([k, v]) => `<span class="mute">${esc(k)}</span><span>${esc(v)}</span>`).join("")}</div>
+    <p class="mute">Customer status update (edit, then verify)</p>
+    <textarea id="update">${esc(rec.status_update)}</textarea>
+    <div id="claims">${claims(P.grounding)}</div>
+    <div class="row"><button class="ghost" onclick="reverify()">Verify</button>
+    <button id="pub" ${P.grounding.publishable && !o.locked ? "" : "disabled"} onclick="publish()">Publish to status page</button><span id="pubmsg" class="mute"></span></div>`;
+}
+
+function claims(gr) {
+  const bad = new Set(gr.unsupported || []);
+  return `<p>${badge(gr.publishable, `grounded ${pct(gr.grounded)} · ${gr.verdict}`)}</p>` +
+    (gr.claims || []).map((c, i) => `<span class="claim ${bad.has(i) ? "bad" : ""}">${esc(c.claim || c.text || c.statement)}
+      <span class="mute"> · ${esc(c.label || c.judgment || c.verdict || "")} ${pct(c.supported ?? c.probability)}</span></span>`).join("");
+}
+
+async function reverify() {
+  const r = await api("/api/verify", {incident_id: current.incident.id, update: $("update").value});
+  current.stages.report.grounding = r; $("claims").innerHTML = claims(r);
+  $("pub").disabled = !r.publishable || current.locked;
+}
+async function publish() {
+  try { await api("/api/publish", {incident_id: current.incident.id, update: $("update").value}); $("pubmsg").textContent = "published ✓"; }
+  catch (e) { $("pubmsg").textContent = e.message; }
+}
+async function unlock() { await api("/api/unlock/" + current.incident.id, {}); current.locked = false; render(current); }
+function dryRun(i) { $("dr-" + i).textContent = "dry-run: " + current.stages.act[i].script.split("\n").length + " commands queued for approval (nothing executed)"; }
+boot();
+</script>
+</body>
+</html>
